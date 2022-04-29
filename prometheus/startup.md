@@ -210,10 +210,24 @@ if cfg.enableNewSDManager {
 
 ```
 
-生成scrape manager对象
+生成scrape manager和tracing manager对象
 
 ```
+scrapeManager  = scrape.NewManager(&cfg.scrape, log.With(logger, "component", "scrape manager"), fanoutStorage)
+tracingManager = tracing.NewManager(logger)
+```
 
+在Prometheus开启auto-gomaxprocs的feature情况下，动态设置GOMAXPROCS
+
+```
+if cfg.enableAutoGOMAXPROCS {
+    l := func(format string, a ...interface{}) {
+    level.Info(logger).Log("component", "automaxprocs", "msg", fmt.Sprintf(strings.TrimPrefix(format, "maxprocs: "), a...))
+    }
+    if _, err := maxprocs.Set(maxprocs.Logger(l)); err != nil {
+        level.Warn(logger).Log("component", "automaxprocs", "msg", "Failed to set GOMAXPROCS automatically", "err", err)
+    }
+}
 ```
 
 
