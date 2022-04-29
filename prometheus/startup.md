@@ -230,6 +230,42 @@ if cfg.enableAutoGOMAXPROCS {
 }
 ```
 
+在以server模式启动Prometheus的情况下，生成queryEngine对象和ruleManager对象
+
+```
+opts := promql.EngineOpts{
+    Logger:                   log.With(logger, "component", "query engine"),
+    Reg:                      prometheus.DefaultRegisterer,
+    MaxSamples:               cfg.queryMaxSamples,
+    Timeout:                  time.Duration(cfg.queryTimeout),
+    ActiveQueryTracker:       promql.NewActiveQueryTracker(localStoragePath, cfg.queryConcurrency, log.With(logger, "component", "activeQueryTracker")),
+    LookbackDelta:            time.Duration(cfg.lookbackDelta),
+    NoStepSubqueryIntervalFn: noStepSubqueryInterval.Get,
+    // EnableAtModifier and EnableNegativeOffset have to be
+    // always on for regular PromQL as of Prometheus v2.33.
+    EnableAtModifier:     true,
+    EnableNegativeOffset: true,
+    EnablePerStepStats:   cfg.enablePerStepStats,
+}
+
+queryEngine = promql.NewEngine(opts)
+
+ruleManager = rules.NewManager(&rules.ManagerOptions{
+    Appendable:      fanoutStorage,
+    Queryable:       localStorage,
+    QueryFunc:       rules.EngineQueryFunc(queryEngine, fanoutStorage),
+    NotifyFunc:      sendAlerts(notifierManager, cfg.web.ExternalURL.String()),
+    Context:         ctxRule,
+    ExternalURL:     cfg.web.ExternalURL,
+    Registerer:      prometheus.DefaultRegisterer,
+    Logger:          log.With(logger, "component", "rule manager"),
+    OutageTolerance: time.Duration(cfg.outageTolerance),
+    ForGracePeriod:  time.Duration(cfg.forGracePeriod),
+    ResendDelay:     time.Duration(cfg.resendDelay),
+})
+
+```
+
 
 
 
