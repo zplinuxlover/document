@@ -186,6 +186,14 @@ if cfg.tsdb.MaxBlockDuration == 0 {
     cfg.tsdb.MaxBlockDuration = maxBlockDuration
 }
 ```
+生成local和remote的Storage对象
+
+```
+localStorage  = &readyStorage{stats: tsdb.NewDBStats()}
+scraper       = &readyScrapeManager{}
+remoteStorage = remote.NewStorage(log.With(logger, "component", "remote"), prometheus.DefaultRegisterer, localStorage.StartTime, localStoragePath, time.Duration(cfg.RemoteFlushDeadline), scraper)
+fanoutStorage = storage.NewFanout(logger, localStorage, remoteStorage)
+```
 
 在开启new-service-discovery-manager的情况下，生成HTTP SD，否则生成File-Based SD，两者的区别参考文档[HTTP SD和File-Based SD的对比](https://prometheus.io/docs/prometheus/latest/http_sd/)
 
@@ -199,6 +207,12 @@ if cfg.enableNewSDManager {
     discoveryManagerScrape = legacymanager.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), legacymanager.Name("scrape"))
     discoveryManagerNotify = legacymanager.NewManager(ctxNotify, log.With(logger, "component", "discovery manager notify"), legacymanager.Name("notify"))
 }
+
+```
+
+生成scrape manager对象
+
+```
 
 ```
 
