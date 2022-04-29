@@ -171,6 +171,36 @@ if cfg.tsdb.RetentionDuration < 0 {
 }
 
 ```
+Prometheus在没有设置cfg.tsdb.MaxBlockDuration的情况下，通过默认值（31d）和cfg.tsdb.RetentionDuration计算最终的值
+```
+if cfg.tsdb.MaxBlockDuration == 0 {
+    maxBlockDuration, err := model.ParseDuration("31d")
+    if err != nil {
+        panic(err)
+    }
+    // When the time retention is set and not too big use to define the max block duration.
+    if cfg.tsdb.RetentionDuration != 0 && cfg.tsdb.RetentionDuration/10 < maxBlockDuration {
+        maxBlockDuration = cfg.tsdb.RetentionDuration / 10
+    }
+
+    cfg.tsdb.MaxBlockDuration = maxBlockDuration
+}
+```
+
+在开启new-service-discovery-manager的情况下，生成HTTP SD，否则生成File-Based SD，两者的区别参考文档[HTTP SD和File-Based SD的对比](https://prometheus.io/docs/prometheus/latest/http_sd/)
+
+```
+if cfg.enableNewSDManager {
+    discovery.RegisterMetrics()
+    discoveryManagerScrape = discovery.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), discovery.Name("scrape"))
+    discoveryManagerNotify = discovery.NewManager(ctxNotify, log.With(logger, "component", "discovery manager notify"), discovery.Name("notify"))
+} else {
+    legacymanager.RegisterMetrics()
+    discoveryManagerScrape = legacymanager.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), legacymanager.Name("scrape"))
+    discoveryManagerNotify = legacymanager.NewManager(ctxNotify, log.With(logger, "component", "discovery manager notify"), legacymanager.Name("notify"))
+}
+
+```
 
 
 
