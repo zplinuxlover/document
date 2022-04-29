@@ -60,6 +60,35 @@ a := kingpin.New(filepath.Base(os.Args[0]), "The Prometheus monitoring server").
 | log.level | log日志级别 | info |
 | log.format | log日志格式 | logfmt |
 
+解析程序选项
+
+```
+_, err := a.Parse(os.Args[1:])
+```
+
+设置Prometheus开启的feature
+
+```
+if err := cfg.setFeatureListOptions(logger); err != nil {
+    fmt.Fprintln(os.Stderr, errors.Wrapf(err, "Error parsing feature list"))
+    os.Exit(1)
+}
+```
+
+在Prometheus以agent和server模式启动的时候判断开启的feature是否合法
+
+```
+if agentMode && len(serverOnlyFlags) > 0 {
+    fmt.Fprintf(os.Stderr, "The following flag(s) can not be used in agent mode: %q", serverOnlyFlags)
+    os.Exit(3)
+}
+
+if !agentMode && len(agentOnlyFlags) > 0 {
+    fmt.Fprintf(os.Stderr, "The following flag(s) can only be used in agent mode: %q", agentOnlyFlags)
+    os.Exit(3)
+}
+```
+
 
 
 
