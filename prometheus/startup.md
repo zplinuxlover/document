@@ -88,8 +88,89 @@ if !agentMode && len(agentOnlyFlags) > 0 {
     os.Exit(3)
 }
 ```
+获取Prometheus的数据存储目录，在Prometheus以server模式启动的时候，使用cfg.serverStoragePath，以agent模式启动的时候，使用cfg.agentStoragePath
 
+```
+localStoragePath := cfg.serverStoragePath
+if agentMode {
+    localStoragePath = cfg.agentStoragePath
+}
+```
 
+计算Prometheus的ExternalURL
+
+```
+cfg.web.ExternalURL, err = computeExternalURL(cfg.prometheusURL, cfg.web.ListenAddress)
+if err != nil {
+    fmt.Fprintln(os.Stderr, errors.Wrapf(err, "parse external URL %q", cfg.prometheusURL))
+    os.Exit(2)
+}
+```
+
+计算CORS跨域配置
+
+```
+cfg.web.CORSOrigin, err = compileCORSRegexString(cfg.corsRegexString)
+if err != nil {
+    fmt.Fprintln(os.Stderr, errors.Wrapf(err, "could not compile CORS regex string %q", cfg.corsRegexString))
+    os.Exit(2)
+}
+```
+加载并且解析配置文件
+
+```
+var cfgFile *config.Config
+if cfgFile, err = config.LoadFile(cfg.configFile, agentMode, false, log.NewNopLogger()); err != nil {
+    absPath, pathErr := filepath.Abs(cfg.configFile)
+    if pathErr != nil {
+        absPath = cfg.configFile
+    }
+    level.Error(logger).Log("msg", fmt.Sprintf("Error loading config (--config.file=%s)", cfg.configFile), "file", absPath, "err", err)
+    os.Exit(2)
+}
+```
+
+~~TODO~~
+
+```
+if cfg.tsdb.EnableExemplarStorage {
+    if cfgFile.StorageConfig.ExemplarsConfig == nil {
+        cfgFile.StorageConfig.ExemplarsConfig = &config.DefaultExemplarsConfig
+    }
+    cfg.tsdb.MaxExemplars = int64(cfgFile.StorageConfig.ExemplarsConfig.MaxExemplars)
+}
+```
+Prometheus在以server模式启动的时候，计算Prometheus TSDB数据保留最大的时间cfg.tsdb.RetentionDuration，如果cfg.tsdb.RetentionDuration和cfg.tsdb.MaxBytes在都没有设置的逻辑下，采取默认的配置（15d），当cfg.tsdb.RetentionDuration的配置为负数的情况下，最大保留100year的数据。
+
+```
+
+// Time retention settings.
+if oldFlagRetentionDuration != 0 {
+    level.Warn(logger).Log("deprecation_notice", "'storage.tsdb.retention' flag is deprecated use 'storage.tsdb.retention.time' instead.")
+    cfg.tsdb.RetentionDuration = oldFlagRetentionDuration
+}
+
+// When the new flag is set it takes precedence.
+if newFlagRetentionDuration != 0 {
+    cfg.tsdb.RetentionDuration = newFlagRetentionDuration
+}
+
+if cfg.tsdb.RetentionDuration == 0 && cfg.tsdb.MaxBytes == 0 {
+    cfg.tsdb.RetentionDuration = defaultRetentionDuration
+    level.Info(logger).Log("msg", "No time or size retention was set so using the default time retention", "duration", defaultRetentionDuration)
+}
+
+// Check for overflows. This limits our max retention to 100y.
+if cfg.tsdb.RetentionDuration < 0 {
+    y, err := model.ParseDuration("100y")
+    if err != nil {
+        panic(err)
+    }
+    cfg.tsdb.RetentionDuration = y
+    level.Warn(logger).Log("msg", "Time retention value is too high. Limiting to: "+y.String())
+}
+
+```
 
 
 
