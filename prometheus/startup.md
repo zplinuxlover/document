@@ -266,6 +266,104 @@ ruleManager = rules.NewManager(&rules.ManagerOptions{
 
 ```
 
+初始化Prometheus的web Handler对象，用于处理客户端请求
+
+```
+webHandler := web.New(log.With(logger, "component", "web"), &cfg.web)
+```
+
+Prometheus的配置可以热更新，生成reloader对象
+
+```
+	reloaders := []reloader{
+		{
+			name:     "db_storage",
+			reloader: localStorage.ApplyConfig,
+		}, {
+			name:     "remote_storage",
+			reloader: remoteStorage.ApplyConfig,
+		}, {
+			name:     "web_handler",
+			reloader: webHandler.ApplyConfig,
+		}, {
+			name: "query_engine",
+			reloader: func(cfg *config.Config) error {
+				if agentMode {
+					// No-op in Agent mode.
+					return nil
+				}
+
+				if cfg.GlobalConfig.QueryLogFile == "" {
+					queryEngine.SetQueryLogger(nil)
+					return nil
+				}
+
+				l, err := logging.NewJSONFileLogger(cfg.GlobalConfig.QueryLogFile)
+				if err != nil {
+					return err
+				}
+				queryEngine.SetQueryLogger(l)
+				return nil
+			},
+		}, {
+			// The Scrape and notifier managers need to reload before the Discovery manager as
+			// they need to read the most updated config when receiving the new targets list.
+			name:     "scrape",
+			reloader: scrapeManager.ApplyConfig,
+		}, {
+			name: "scrape_sd",
+			reloader: func(cfg *config.Config) error {
+				c := make(map[string]discovery.Configs)
+				for _, v := range cfg.ScrapeConfigs {
+					c[v.JobName] = v.ServiceDiscoveryConfigs
+				}
+				return discoveryManagerScrape.ApplyConfig(c)
+			},
+		}, {
+			name:     "notify",
+			reloader: notifierManager.ApplyConfig,
+		}, {
+			name: "notify_sd",
+			reloader: func(cfg *config.Config) error {
+				c := make(map[string]discovery.Configs)
+				for k, v := range cfg.AlertingConfig.AlertmanagerConfigs.ToMap() {
+					c[k] = v.ServiceDiscoveryConfigs
+				}
+				return discoveryManagerNotify.ApplyConfig(c)
+			},
+		}, {
+			name: "rules",
+			reloader: func(cfg *config.Config) error {
+				if agentMode {
+					// No-op in Agent mode
+					return nil
+				}
+
+				// Get all rule files matching the configuration paths.
+				var files []string
+				for _, pat := range cfg.RuleFiles {
+					fs, err := filepath.Glob(pat)
+					if err != nil {
+						// The only error can be a bad pattern.
+						return errors.Wrapf(err, "error retrieving rule files for %s", pat)
+					}
+					files = append(files, fs...)
+				}
+				return ruleManager.Update(
+					time.Duration(cfg.GlobalConfig.EvaluationInterval),
+					files,
+					cfg.GlobalConfig.ExternalLabels,
+					externalURL,
+					nil,
+				)
+			},
+		}, {
+			name:     "tracing",
+			reloader: tracingManager.ApplyConfig,
+		},
+	}
+```
+
 
 
 
