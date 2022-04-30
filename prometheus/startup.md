@@ -363,6 +363,491 @@ Prometheus的配置可以热更新，生成reloader对象
 		},
 	}
 ```
+用于控制Prometheus Components启动顺序的channel
+```
+	// Start all components while we wait for TSDB to open but only load
+	// initial config and mark ourselves as ready after it completed.
+	dbOpen := make(chan struct{})
+
+	// sync.Once is used to make sure we can close the channel at different execution stages(SIGTERM or when the config is loaded).
+	type closeOnce struct {
+		C     chan struct{}
+		once  sync.Once
+		Close func()
+	}
+	// Wait until the server is ready to handle reloading.
+	reloadReady := &closeOnce{
+		C: make(chan struct{}),
+	}
+	reloadReady.Close = func() {
+		reloadReady.once.Do(func() {
+			close(reloadReady.C)
+		})
+	}
+```
+
+初始化Prometheus的http的listener，并且校验TLS配置是否合法
+
+```
+	listener, err := webHandler.Listener()
+	if err != nil {
+		level.Error(logger).Log("msg", "Unable to start web listener", "err", err)
+		os.Exit(1)
+	}
+
+	err = toolkit_web.Validate(*webConfig)
+	if err != nil {
+		level.Error(logger).Log("msg", "Unable to validate web configuration file", "err", err)
+		os.Exit(1)
+	}
+```
+
+
+创建run.Group，并且添加一系列的actors，并且启动这些actor，这部分是Prometheus启动的核心代码部分，详细分析每一个actor实现的功能
+
+
+```
+	var g run.Group
+	{
+		// Termination handler.
+		term := make(chan os.Signal, 1)
+		signal.Notify(term, os.Interrupt, syscall.SIGTERM)
+		cancel := make(chan struct{})
+		g.Add(
+			func() error {
+				// Don't forget to release the reloadReady channel so that waiting blocks can exit normally.
+				select {
+				case <-term:
+					level.Warn(logger).Log("msg", "Received SIGTERM, exiting gracefully...")
+					reloadReady.Close()
+				case <-webHandler.Quit():
+					level.Warn(logger).Log("msg", "Received termination request via web service, exiting gracefully...")
+				case <-cancel:
+					reloadReady.Close()
+				}
+				return nil
+			},
+			func(err error) {
+				close(cancel)
+			},
+		)
+	}
+	{
+		// Scrape discovery manager.
+		g.Add(
+			func() error {
+				err := discoveryManagerScrape.Run()
+				level.Info(logger).Log("msg", "Scrape discovery manager stopped")
+				return err
+			},
+			func(err error) {
+				level.Info(logger).Log("msg", "Stopping scrape discovery manager...")
+				cancelScrape()
+			},
+		)
+	}
+	{
+		// Notify discovery manager.
+		g.Add(
+			func() error {
+				err := discoveryManagerNotify.Run()
+				level.Info(logger).Log("msg", "Notify discovery manager stopped")
+				return err
+			},
+			func(err error) {
+				level.Info(logger).Log("msg", "Stopping notify discovery manager...")
+				cancelNotify()
+			},
+		)
+	}
+	{
+		// Scrape manager.
+		g.Add(
+			func() error {
+				// When the scrape manager receives a new targets list
+				// it needs to read a valid config for each job.
+				// It depends on the config being in sync with the discovery manager so
+				// we wait until the config is fully loaded.
+				<-reloadReady.C
+
+				err := scrapeManager.Run(discoveryManagerScrape.SyncCh())
+				level.Info(logger).Log("msg", "Scrape manager stopped")
+				return err
+			},
+			func(err error) {
+				// Scrape manager needs to be stopped before closing the local TSDB
+				// so that it doesn't try to write samples to a closed storage.
+				level.Info(logger).Log("msg", "Stopping scrape manager...")
+				scrapeManager.Stop()
+			},
+		)
+	}
+	{
+		// Tracing manager.
+		g.Add(
+			func() error {
+				<-reloadReady.C
+				tracingManager.Run()
+				return nil
+			},
+			func(err error) {
+				tracingManager.Stop()
+			},
+		)
+	}
+	{
+		// Reload handler.
+
+		// Make sure that sighup handler is registered with a redirect to the channel before the potentially
+		// long and synchronous tsdb init.
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		cancel := make(chan struct{})
+		g.Add(
+			func() error {
+				<-reloadReady.C
+
+				for {
+					select {
+					case <-hup:
+						if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
+							level.Error(logger).Log("msg", "Error reloading config", "err", err)
+						}
+					case rc := <-webHandler.Reload():
+						if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
+							level.Error(logger).Log("msg", "Error reloading config", "err", err)
+							rc <- err
+						} else {
+							rc <- nil
+						}
+					case <-cancel:
+						return nil
+					}
+				}
+			},
+			func(err error) {
+				// Wait for any in-progress reloads to complete to avoid
+				// reloading things after they have been shutdown.
+				cancel <- struct{}{}
+			},
+		)
+	}
+	{
+		// Initial configuration loading.
+		cancel := make(chan struct{})
+		g.Add(
+			func() error {
+				select {
+				case <-dbOpen:
+				// In case a shutdown is initiated before the dbOpen is released
+				case <-cancel:
+					reloadReady.Close()
+					return nil
+				}
+
+				if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
+					return errors.Wrapf(err, "error loading config from %q", cfg.configFile)
+				}
+
+				reloadReady.Close()
+
+				webHandler.Ready()
+				level.Info(logger).Log("msg", "Server is ready to receive web requests.")
+				<-cancel
+				return nil
+			},
+			func(err error) {
+				close(cancel)
+			},
+		)
+	}
+	if !agentMode {
+		// Rule manager.
+		g.Add(
+			func() error {
+				<-reloadReady.C
+				ruleManager.Run()
+				return nil
+			},
+			func(err error) {
+				ruleManager.Stop()
+			},
+		)
+
+		// TSDB.
+		opts := cfg.tsdb.ToTSDBOptions()
+		cancel := make(chan struct{})
+		g.Add(
+			func() error {
+				level.Info(logger).Log("msg", "Starting TSDB ...")
+				if cfg.tsdb.WALSegmentSize != 0 {
+					if cfg.tsdb.WALSegmentSize < 10*1024*1024 || cfg.tsdb.WALSegmentSize > 256*1024*1024 {
+						return errors.New("flag 'storage.tsdb.wal-segment-size' must be set between 10MB and 256MB")
+					}
+				}
+				if cfg.tsdb.MaxBlockChunkSegmentSize != 0 {
+					if cfg.tsdb.MaxBlockChunkSegmentSize < 1024*1024 {
+						return errors.New("flag 'storage.tsdb.max-block-chunk-segment-size' must be set over 1MB")
+					}
+				}
+
+				db, err := openDBWithMetrics(localStoragePath, logger, prometheus.DefaultRegisterer, &opts, localStorage.getStats())
+				if err != nil {
+					return errors.Wrapf(err, "opening storage failed")
+				}
+
+				switch fsType := prom_runtime.Statfs(localStoragePath); fsType {
+				case "NFS_SUPER_MAGIC":
+					level.Warn(logger).Log("fs_type", fsType, "msg", "This filesystem is not supported and may lead to data corruption and data loss. Please carefully read https://prometheus.io/docs/prometheus/latest/storage/ to learn more about supported filesystems.")
+				default:
+					level.Info(logger).Log("fs_type", fsType)
+				}
+
+				level.Info(logger).Log("msg", "TSDB started")
+				level.Debug(logger).Log("msg", "TSDB options",
+					"MinBlockDuration", cfg.tsdb.MinBlockDuration,
+					"MaxBlockDuration", cfg.tsdb.MaxBlockDuration,
+					"MaxBytes", cfg.tsdb.MaxBytes,
+					"NoLockfile", cfg.tsdb.NoLockfile,
+					"RetentionDuration", cfg.tsdb.RetentionDuration,
+					"WALSegmentSize", cfg.tsdb.WALSegmentSize,
+					"AllowOverlappingBlocks", cfg.tsdb.AllowOverlappingBlocks,
+					"WALCompression", cfg.tsdb.WALCompression,
+				)
+
+				startTimeMargin := int64(2 * time.Duration(cfg.tsdb.MinBlockDuration).Seconds() * 1000)
+				localStorage.Set(db, startTimeMargin)
+				close(dbOpen)
+				<-cancel
+				return nil
+			},
+			func(err error) {
+				if err := fanoutStorage.Close(); err != nil {
+					level.Error(logger).Log("msg", "Error stopping storage", "err", err)
+				}
+				close(cancel)
+			},
+		)
+	}
+	if agentMode {
+		// WAL storage.
+		opts := cfg.agent.ToAgentOptions()
+		cancel := make(chan struct{})
+		g.Add(
+			func() error {
+				level.Info(logger).Log("msg", "Starting WAL storage ...")
+				if cfg.agent.WALSegmentSize != 0 {
+					if cfg.agent.WALSegmentSize < 10*1024*1024 || cfg.agent.WALSegmentSize > 256*1024*1024 {
+						return errors.New("flag 'storage.agent.wal-segment-size' must be set between 10MB and 256MB")
+					}
+				}
+				db, err := agent.Open(
+					logger,
+					prometheus.DefaultRegisterer,
+					remoteStorage,
+					localStoragePath,
+					&opts,
+				)
+				if err != nil {
+					return errors.Wrap(err, "opening storage failed")
+				}
+
+				switch fsType := prom_runtime.Statfs(localStoragePath); fsType {
+				case "NFS_SUPER_MAGIC":
+					level.Warn(logger).Log("fs_type", fsType, "msg", "This filesystem is not supported and may lead to data corruption and data loss. Please carefully read https://prometheus.io/docs/prometheus/latest/storage/ to learn more about supported filesystems.")
+				default:
+					level.Info(logger).Log("fs_type", fsType)
+				}
+
+				level.Info(logger).Log("msg", "Agent WAL storage started")
+				level.Debug(logger).Log("msg", "Agent WAL storage options",
+					"WALSegmentSize", cfg.agent.WALSegmentSize,
+					"WALCompression", cfg.agent.WALCompression,
+					"StripeSize", cfg.agent.StripeSize,
+					"TruncateFrequency", cfg.agent.TruncateFrequency,
+					"MinWALTime", cfg.agent.MinWALTime,
+					"MaxWALTime", cfg.agent.MaxWALTime,
+				)
+
+				localStorage.Set(db, 0)
+				close(dbOpen)
+				<-cancel
+				return nil
+			},
+			func(e error) {
+				if err := fanoutStorage.Close(); err != nil {
+					level.Error(logger).Log("msg", "Error stopping storage", "err", err)
+				}
+				close(cancel)
+			},
+		)
+	}
+	{
+		// Web handler.
+		g.Add(
+			func() error {
+				if err := webHandler.Run(ctxWeb, listener, *webConfig); err != nil {
+					return errors.Wrapf(err, "error starting web server")
+				}
+				return nil
+			},
+			func(err error) {
+				cancelWeb()
+			},
+		)
+	}
+	{
+		// Notifier.
+
+		// Calling notifier.Stop() before ruleManager.Stop() will cause a panic if the ruleManager isn't running,
+		// so keep this interrupt after the ruleManager.Stop().
+		g.Add(
+			func() error {
+				// When the notifier manager receives a new targets list
+				// it needs to read a valid config for each job.
+				// It depends on the config being in sync with the discovery manager
+				// so we wait until the config is fully loaded.
+				<-reloadReady.C
+
+				notifierManager.Run(discoveryManagerNotify.SyncCh())
+				level.Info(logger).Log("msg", "Notifier manager stopped")
+				return nil
+			},
+			func(err error) {
+				notifierManager.Stop()
+			},
+		)
+	}
+	if err := g.Run(); err != nil {
+		level.Error(logger).Log("err", err)
+		os.Exit(1)
+	}
+```
+
+监听操作系统的退出信号和通过web接口的退出信号，优雅退出
+
+```
+
+	{
+		// Termination handler.
+		term := make(chan os.Signal, 1)
+		signal.Notify(term, os.Interrupt, syscall.SIGTERM)
+		cancel := make(chan struct{})
+		g.Add(
+			func() error {
+				// Don't forget to release the reloadReady channel so that waiting blocks can exit normally.
+				select {
+				case <-term:
+					level.Warn(logger).Log("msg", "Received SIGTERM, exiting gracefully...")
+					reloadReady.Close()
+				case <-webHandler.Quit():
+					level.Warn(logger).Log("msg", "Received termination request via web service, exiting gracefully...")
+				case <-cancel:
+					reloadReady.Close()
+				}
+				return nil
+			},
+			func(err error) {
+				close(cancel)
+			},
+		)
+	}
+
+```
+
+启动Prometheusd的web服务
+
+```
+		g.Add(
+			func() error {
+				if err := webHandler.Run(ctxWeb, listener, *webConfig); err != nil {
+					return errors.Wrapf(err, "error starting web server")
+				}
+				return nil
+			},
+			func(err error) {
+				cancelWeb()
+			},
+		)
+	}
+```
+
+启动TSDB数据存储组件
+
+```
+
+				level.Info(logger).Log("msg", "Starting TSDB ...")
+				if cfg.tsdb.WALSegmentSize != 0 {
+					if cfg.tsdb.WALSegmentSize < 10*1024*1024 || cfg.tsdb.WALSegmentSize > 256*1024*1024 {
+						return errors.New("flag 'storage.tsdb.wal-segment-size' must be set between 10MB and 256MB")
+					}
+				}
+				if cfg.tsdb.MaxBlockChunkSegmentSize != 0 {
+					if cfg.tsdb.MaxBlockChunkSegmentSize < 1024*1024 {
+						return errors.New("flag 'storage.tsdb.max-block-chunk-segment-size' must be set over 1MB")
+					}
+				}
+
+				db, err := openDBWithMetrics(localStoragePath, logger, prometheus.DefaultRegisterer, &opts, localStorage.getStats())
+				if err != nil {
+					return errors.Wrapf(err, "opening storage failed")
+				}
+
+				switch fsType := prom_runtime.Statfs(localStoragePath); fsType {
+				case "NFS_SUPER_MAGIC":
+					level.Warn(logger).Log("fs_type", fsType, "msg", "This filesystem is not supported and may lead to data corruption and data loss. Please carefully read https://prometheus.io/docs/prometheus/latest/storage/ to learn more about supported filesystems.")
+				default:
+					level.Info(logger).Log("fs_type", fsType)
+				}
+
+				level.Info(logger).Log("msg", "TSDB started")
+				level.Debug(logger).Log("msg", "TSDB options",
+					"MinBlockDuration", cfg.tsdb.MinBlockDuration,
+					"MaxBlockDuration", cfg.tsdb.MaxBlockDuration,
+					"MaxBytes", cfg.tsdb.MaxBytes,
+					"NoLockfile", cfg.tsdb.NoLockfile,
+					"RetentionDuration", cfg.tsdb.RetentionDuration,
+					"WALSegmentSize", cfg.tsdb.WALSegmentSize,
+					"AllowOverlappingBlocks", cfg.tsdb.AllowOverlappingBlocks,
+					"WALCompression", cfg.tsdb.WALCompression,
+				)
+
+				startTimeMargin := int64(2 * time.Duration(cfg.tsdb.MinBlockDuration).Seconds() * 1000)
+				localStorage.Set(db, startTimeMargin)
+				close(dbOpen)
+				<-cancel
+				return nil
+
+```
+
+启动初始配置加载组件，将配置应用到每一个component，成功应用每一个配置后，会关闭reloadReady.C，其他组件会并行启动运行
+
+```
+				select {
+				case <-dbOpen:
+				// In case a shutdown is initiated before the dbOpen is released
+				case <-cancel:
+					reloadReady.Close()
+					return nil
+				}
+
+				if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
+					return errors.Wrapf(err, "error loading config from %q", cfg.configFile)
+				}
+
+				reloadReady.Close()
+
+				webHandler.Ready()
+				level.Info(logger).Log("msg", "Server is ready to receive web requests.")
+				<-cancel
+				return nil
+```
+
+
+
+
+
+
 
 
 
