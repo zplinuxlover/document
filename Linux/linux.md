@@ -8,3 +8,7 @@
 yum -y install psmisc
 fuser 9100/tcp 
 ```
+
+#### 3. Linux查看命令的路径
+
+> which -a bash
