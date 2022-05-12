@@ -12,7 +12,12 @@ fuser 9100/tcp
 #### 3. Linux查看命令的路径
 
 > which -a bash
+> command -v openresty
 
 #### 4. grep 命令正则表达式
 
 > grep -E "[0-9]+\\.[0-9]+" -o 
+
+#### 5. 查看Linux进程打开的文件
+
+> lsof -p pid
