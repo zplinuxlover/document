@@ -175,7 +175,45 @@ metrics_1{label_1="value_1", label_2="value_3"}
 └──────────────────────────────────────────────────────────┘
 
 ```
-其中的len记录的是该Series的长度，labels count记录的是该Series中label-value pair的个数，后面跟随实际的label-value pair，每一个label-value pair记录的是该label和value引用的Symbols区中的index索引（不是实际的offset），那么在读取的时候，通过Symbols中的offsets（每隔32个Symbol记录一个offset）数组，即可定位到该index所在的实际的Symbol，通过index/32找到对应的起始位置，再跳过index%32-1个symbol，即可读取到实际的symbol。chunks count记录的是该Series在时间区间[mint, maxt]的Samples存储的chunk的position(chunk文件ID和内部offset组成的uint64)。后面记录实际的chunk的元数据，其中第一个chunk记录的是实际的mint和该chunk的maxt-mint和chunk ref，后面的chunk记录的是和上一个chunk的mint的差值和该chunk的maxt-mint，和上一个chunk的offset的差值。Prometheus通过差值编码，降低磁盘的占用量，和lucene一样，lucene中也存在大量的编码方式，原理一致，都是为了降低磁盘的占用量。最后是该Series记录的CRC32校验和。
+每一个Series记录在磁盘存储中是16字节对齐的。其中的len记录的是该Series的长度，labels count记录的是该Series中label-value pair的个数，后面跟随实际的label-value pair，每一个label-value pair记录的是该label和value引用的Symbols区中的index索引（不是实际的offset），那么在读取的时候，通过Symbols中的offsets（每隔32个Symbol记录一个offset）数组，即可定位到该index所在的实际的Symbol，通过index/32找到对应的起始位置，再跳过index%32-1个symbol，即可读取到实际的symbol。chunks count记录的是该Series在时间区间[mint, maxt]的Samples存储的chunk的position(chunk文件ID和内部offset组成的uint64)。后面记录实际的chunk的元数据，其中第一个chunk记录的是实际的mint和该chunk的maxt-mint和chunk ref，后面的chunk记录的是和上一个chunk的mint的差值和该chunk的maxt-mint，和上一个chunk的offset的差值。Prometheus通过差值编码，降低磁盘的占用量，和lucene一样，lucene中也存在大量的编码方式，原理一致，都是为了降低磁盘的占用量。最后是该Series记录的CRC32校验和。
+
+#### 2.3 Label Indices的结构
+
+```
+┌───────────────────────────────────────┐
+│ ┌───────────────────────────────────┐ │
+│ │          label index 1            │ │
+│ ├───────────────────────────────────┤ │
+│ │                 . . .             │ │
+│ ├───────────────────────────────────┤ │
+│ │          label index 1            │ │
+│ └───────────────────────────────────┘ │
+└───────────────────────────────────────┘
+```
+该部分的每一个label index记录在磁盘存储中都是4字节对齐的。
+
+```
+
+┌────────────────────┬────────────────────┐
+│ len <4b>           │ #names <4b>        │
+├────────────────────┴────────────────────┤
+│        #values                          │
+├─────────────────────────────────────────┤
+│ ┌─────────────────────────────────────┐ │
+│ │ ref(value_1)  <4b>                  │ │
+│ ├─────────────────────────────────────┤ │
+│ │ ...                                 │ │
+│ ├─────────────────────────────────────┤ │
+│ │ ref(value_n)  <4b>                  │ │
+│ └─────────────────────────────────────┘ │
+├─────────────────────────────────────────┤
+│ CRC32 <4b>                              │
+└─────────────────────────────────────────┘
+
+```
+
+该部分记录的是每一个label name下的所有的label values的集合，len部分记录的是该Label Index的长度，#names是name的个数，目前为固定值1，#values 记录的是该values的个数，后面跟随所有的value，每一个value中记录的是该value在Symbols中的index(在V2版本中不是存储位置的offset)，那么在根据该值读取实际的值得时候，根据Symbols的offsets数组(每32个symbol记录一个offset)，通过index/32可以取到offsets中的一个offset，再根据index%32顺序查找即可找到该symbol。
+
 
 
 
