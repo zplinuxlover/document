@@ -35,7 +35,7 @@ Prometheus 整体的文件结构如下
 
 其中chunks目录下存储每一个Block中的所有的Chunk, Index文件是该Chunk的倒排索引，meta.json记录了该Block的元数据，tombstones记录的是删除信息。
 
-本文中我们重点分析Index文件的存储格式，了解该格式是明白Prometheus查询流程的前提
+本文我们将重点分析Index文件的存储格式，了解该格式是明白Prometheus查询流程的前提。
 
 #### 2. Prometheus的Index存储格式
 
