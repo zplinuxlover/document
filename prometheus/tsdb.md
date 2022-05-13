@@ -214,6 +214,135 @@ metrics_1{label_1="value_1", label_2="value_3"}
 
 该部分记录的是每一个label name下的所有的label values的集合，len部分记录的是该Label Index的长度，#names是name的个数，目前为固定值1，#values 记录的是该values的个数，后面跟随所有的value，每一个value中记录的是该value在Symbols中的index(在V2版本中不是存储位置的offset)，那么在根据该值读取实际的值得时候，根据Symbols的offsets数组(每32个symbol记录一个offset)，通过index/32可以取到offsets中的一个offset，再根据index%32顺序查找即可找到该symbol。
 
+#### 2.4 Postings的结构
+
+Prometheus Index中Postings中记录的是label-pair对应的所有的series在Series中记录的引用（相对于文件的偏移量）。这是Prometheus查询的关键。该区域的每一条Postings记录是4字节对齐的。该区域是根据label-value有序的。
+
+```
+┌───────────────────────────────────────┐
+│ ┌───────────────────────────────────┐ │
+│ │           Postings 1              │ │
+│ ├───────────────────────────────────┤ │
+│ │             . . .                 │ │
+│ ├───────────────────────────────────┤ │
+│ │           Postings N              │ │
+│ └───────────────────────────────────┘ │
+└───────────────────────────────────────┘
+```
+
+每一个Postings的记录格式为
+
+```
+┌────────────────────┬────────────────────┐
+│ len <4B>           │ #entries <4B>      │
+├────────────────────┴────────────────────┤
+│ ┌─────────────────────────────────────┐ │
+│ │ ref(series_1) <4B>                  │ │
+│ ├─────────────────────────────────────┤ │
+│ │ ...                                 │ │
+│ ├─────────────────────────────────────┤ │
+│ │ ref(series_n) <4B>                  │ │
+│ └─────────────────────────────────────┘ │
+├─────────────────────────────────────────┤
+│ CRC32 <4b>                              │
+└─────────────────────────────────────────┘
+```
+
+其中, len字段记录的是该Postings占用的字节数，#entries 记录的是该label-value pair对应的Series集合中Series的个数，后面的每一个记录的是该Series的offset（因为Series是16字节对齐的，所以该区域记录的是offset/16），CRC32是对该Posting的校验和。
+
+如果存在如下的Series
+
+```
+metrix{label_1="value_1", label_2="value_2"} -> series 1
+metrix{label_1="value_1", label_2="value_3"} -> series 2
+```
+
+那么label_1="value_1" 对应的Postings为(1, 2), label_2="value_2"对应的Postings为(1)，label_2="value_3"对应的Postings为(2)
+
+
+#### 2.5 Label Offset Table的结构
+
+该区域记录的是label-value pair中的key在label index中的引用（该Label Index对应的offset）
+
+
+```
+┌────────────────────┬────────────────────┐
+│ len <4B>           │ #entries <4B>      │
+├────────────────────┴────────────────────┤
+│          label offset 1                 │
+│ ┌─────────────────────────────────────┐ │
+│ │   label count(n=1) <uvarint64>      │ │
+│ ├─────────────────────────────────────┤ │
+│ │   lebel len <uvarint64>             │ │
+│ ├─────────────────────────────────────┤ │
+│ │   label bytes<bytes>                │ │
+│ ├─────────────────────────────────────┤ │
+│ │   ref(label index)<uvarint64>       │ │
+│ └─────────────────────────────────────┘ │
+│              ...                        │
+│                                         │
+│          label offset N                 │
+│ ┌─────────────────────────────────────┐ │
+│ │   label count(n=1) <uvarint64>      │ │
+│ ├─────────────────────────────────────┤ │
+│ │   lebel len <uvarint64>             │ │
+│ ├─────────────────────────────────────┤ │
+│ │   label bytes<bytes>                │ │
+│ ├─────────────────────────────────────┤ │
+│ │   ref(label index)<uvarint64>       │ │
+│ └─────────────────────────────────────┘ │
+├─────────────────────────────────────────┤
+│ CRC32 <4b>                              │
+└─────────────────────────────────────────┘
+```
+
+在每一个label offset 记录中label count记录的是label的个数，目前是固定值1，代表后面跟随的label的个数，lebel len和label bytes记录的是该label具体的值，ref(label index)记录的是该label在label index中的offset。
+
+#### 2.6 Postings Offset Table的结构
+
+该区域记录的是key-value pair对应的Postings的offset
+
+```
+┌─────────────────────┬──────────────────────┐
+│ len <4B>            │ #entries <4B>        │
+├─────────────────────┴──────────────────────┤
+│                Posting Offset 1            │
+│ ┌────────────────────────────────────────┐ │
+│ │  n = 2 <1B>                            │ │
+│ ├──────────────────────┬─────────────────┤ │
+│ │ len(name) <uvarint>  │ name <bytes>    │ │
+│ ├──────────────────────┼─────────────────┤ │
+│ │ len(value) <uvarint> │ value <bytes>   │ │
+│ ├──────────────────────┴─────────────────┤ │
+│ │  offset <uvarint64>                    │ │
+│ └────────────────────────────────────────┘ │
+│                    . . .                   │
+│                                            │
+│                Posting Offset N            │
+│ ┌────────────────────────────────────────┐ │
+│ │  n = 2 <1B>                            │ │
+│ ├──────────────────────┬─────────────────┤ │
+│ │ len(name) <uvarint>  │ name <bytes>    │ │
+│ ├──────────────────────┼─────────────────┤ │
+│ │ len(value) <uvarint> │ value <bytes>   │ │
+│ ├──────────────────────┴─────────────────┤ │
+│ │ ref(Postings) <uvarint64>              │ │
+│ └────────────────────────────────────────┘ │
+├────────────────────────────────────────────┤
+│  CRC32 <4B>                                │
+└────────────────────────────────────────────┘
+```
+
+其中len记录的是该Postings Offset Table占用的磁盘字节数，#entries代表Postings Offset Table的个数，其中每一个Postings Offset Table中，记录该label-value pair的具体值和在Positing中的offset(文件的偏移量)，最后以CRC32结尾。
+
+我们已经介绍完Prometheus中Index的完整结构，该结构是理解Prometheus查询流程的前提，后面我们会详细介绍Prometheus的查询流程以及Block中Chunk的记录格式。该文章通过对Prometheus的源码的深度剖析并且结合Prometheus的文档总结而来。
+
+参考文档
+
+1. [Prometheus索引结构官方文档](https://github.com/prometheus/prometheus/blob/main/tsdb/docs/format/index.md)
+
+1. [Prometheus索引结构文档](https://ganeshvernekar.com/blog/prometheus-tsdb-persistent-block-and-its-index/)
+
 
 
 
