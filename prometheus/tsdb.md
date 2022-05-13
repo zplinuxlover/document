@@ -63,7 +63,7 @@ Prometheus 整体的文件结构如下
 
 #### 2.1 TOC的结构
 
-TOC(table of content)记录的是该文件中Symbol Table，Series，Label Indices，Postings，Label Offset Table，Postings Offset Table在文件中的位置，该部分为固定长度52B，解析该文件的时候，通过解析文件末尾的52Bytes即可获取Index中各个部分在文件中的位置，该部分的详细结构为
+TOC(table of content)记录的是该文件中Symbol Table，Series，Label Indices，Postings，Label Offset Table，Postings Offset Table在文件中的位置，该部分为固定长度52B，解析该文件的时候，通过解析文件末尾的52Bytes即可获得Index文件中各个部分在文件中的位置，该部分的详细结构为
 
 ```
 ┌──────────────────────────────────┐
@@ -86,7 +86,7 @@ TOC(table of content)记录的是该文件中Symbol Table，Series，Label Indic
 
 #### 2.1 Symbol Table的结构
 
-首先我们分析Symbol Table部分的详细结构，该部分记录的是Series中的所有的label-value中的值。
+首先我们分析Symbol Table部分的详细结构，该部分记录的是Series中的所有的label-value pair中的值。
 假如我们在Head中存在如下Series
 
 ```
@@ -154,6 +154,7 @@ metrics_1{label_1="value_1", label_2="value_3"}
 │ ├──────────────────────────────────────────────────────┤ │
 │ │     chunks count <uvarint64>                         │ │
 │ ├──────────────────────────────────────────────────────┤ │
+│ │                  chunk meta 1                        │ │
 │ │    ┌────────────────────────────────────────────┐    │ │
 │ │    │ c_0.mint <varint64>                        │    │ │
 │ │    ├────────────────────────────────────────────┤    │ │
@@ -161,6 +162,9 @@ metrics_1{label_1="value_1", label_2="value_3"}
 │ │    ├────────────────────────────────────────────┤    │ │
 │ │    │ ref(c_0.data) <uvarint64>                  │    │ │
 │ │    └────────────────────────────────────────────┘    │ │
+│ │                    ...                               │ │
+│ │                                                      │ │
+│ │                  chunk meta N                        │ │
 │ │    ┌────────────────────────────────────────────┐    │ │
 │ │    │ c_i.mint - c_i-1.maxt <uvarint64>          │    │ │
 │ │    ├────────────────────────────────────────────┤    │ │
@@ -168,14 +172,14 @@ metrics_1{label_1="value_1", label_2="value_3"}
 │ │    ├────────────────────────────────────────────┤    │ │
 │ │    │ ref(c_i.data) - ref(c_i-1.data) <varint64> │    │ │
 │ │    └────────────────────────────────────────────┘    │ │
-│ │                      ...                             │ │
+│ │                                                      │ │
 │ └──────────────────────────────────────────────────────┘ │
 ├──────────────────────────────────────────────────────────┤
 │ CRC32 <4b>                                               │
 └──────────────────────────────────────────────────────────┘
 
 ```
-每一个Series记录在磁盘存储中是16字节对齐的。其中的len记录的是该Series的长度，labels count记录的是该Series中label-value pair的个数，后面跟随实际的label-value pair，每一个label-value pair记录的是该label和value引用的Symbols区中的index索引（不是实际的offset），那么在读取的时候，通过Symbols中的offsets（每隔32个Symbol记录一个offset）数组，即可定位到该index所在的实际的Symbol，通过index/32找到对应的起始位置，再跳过index%32-1个symbol，即可读取到实际的symbol。chunks count记录的是该Series在时间区间[mint, maxt]的Samples存储的chunk的position(chunk文件ID和内部offset组成的uint64)。后面记录实际的chunk的元数据，其中第一个chunk记录的是实际的mint和该chunk的maxt-mint和chunk ref，后面的chunk记录的是和上一个chunk的mint的差值和该chunk的maxt-mint，和上一个chunk的offset的差值。Prometheus通过差值编码，降低磁盘的占用量，和lucene一样，lucene中也存在大量的编码方式，原理一致，都是为了降低磁盘的占用量。最后是该Series记录的CRC32校验和。
+每一个Series记录在磁盘存储中是16字节对齐的。其中的len记录的是该Series的长度，labels count记录的是该Series中label-value pair的个数，后面跟随实际的label-value pair，每一个label-value pair记录的是该label和value引用的Symbols区中的index索引（不是实际的offset），那么在读取的时候，通过Symbols中的offsets（每隔32个Symbol记录一个offset）数组，即可定位到该index所在的实际的Symbol，通过index/32找到对应的起始位置，再跳过index%32-1个symbol，即可读取到实际的symbol。chunks count记录的是该Series在时间区间[mint, maxt]的Samples存储在chunk的position(chunk文件ID和内部offset组成的uint64)。后面记录实际的chunk的元数据，其中第一个chunk记录的是实际的mint和该chunk的maxt-mint和chunk ref，后面的chunk记录的是和上一个chunk的mint的差值和该chunk的maxt-mint，和上一个chunk的offset的差值。Prometheus通过差值编码，降低磁盘的占用量，和lucene一样，lucene中也存在大量的编码方式，原理一致，都是为了降低磁盘的占用量。最后是该Series记录的CRC32校验和。
 
 #### 2.3 Label Indices的结构
 
@@ -186,7 +190,7 @@ metrics_1{label_1="value_1", label_2="value_3"}
 │ ├───────────────────────────────────┤ │
 │ │                 . . .             │ │
 │ ├───────────────────────────────────┤ │
-│ │          label index 1            │ │
+│ │          label index N            │ │
 │ └───────────────────────────────────┘ │
 └───────────────────────────────────────┘
 ```
@@ -212,11 +216,11 @@ metrics_1{label_1="value_1", label_2="value_3"}
 
 ```
 
-该部分记录的是每一个label name下的所有的label values的集合，len部分记录的是该Label Index的长度，#names是name的个数，目前为固定值1，#values 记录的是该values的个数，后面跟随所有的value，每一个value中记录的是该value在Symbols中的index(在V2版本中不是存储位置的offset)，那么在根据该值读取实际的值得时候，根据Symbols的offsets数组(每32个symbol记录一个offset)，通过index/32可以取到offsets中的一个offset，再根据index%32顺序查找即可找到该symbol。
+该部分记录的是每一个label name下的所有的label values的集合，len部分记录的是该Label Index的长度，#names是name的个数，目前为固定值1，#values 记录的是该values的个数，后面跟随所有的value，每一个value中记录的是该value在Symbols中的index(在V2版本中不是存储位置的offset)，那么在根据该值读取实际的值的时候，根据Symbols的offsets数组(每32个symbol记录一个offset)，通过index/32可以取到offsets中的一个offset，再根据index%32顺序查找即可找到该symbol。
 
 #### 2.4 Postings的结构
 
-Prometheus Index中Postings中记录的是label-pair对应的所有的series在Series中记录的引用（相对于文件的偏移量）。这是Prometheus查询的关键。该区域的每一条Postings记录是4字节对齐的。该区域是根据label-value有序的。
+Prometheus Index中Postings中记录的是label-value pair对应的所有的series在Series中记录的引用（相对于文件的偏移量）。这是Prometheus查询的关键。该区域的每一条Postings记录是4字节对齐的。该区域是根据label-value有序的。
 
 ```
 ┌───────────────────────────────────────┐
@@ -248,7 +252,7 @@ Prometheus Index中Postings中记录的是label-pair对应的所有的series在S
 └─────────────────────────────────────────┘
 ```
 
-其中, len字段记录的是该Postings占用的字节数，#entries 记录的是该label-value pair对应的Series集合中Series的个数，后面的每一个记录的是该Series的offset（因为Series是16字节对齐的，所以该区域记录的是offset/16），CRC32是对该Posting的校验和。
+其中, len字段记录的是该Postings占用的字节数，#entries 记录的是该label-value pair对应的Series集合中Series的个数，后面的每一个记录的是该Series的offset（因为Series是16字节对齐的，所以该区域记录的是offset/16），CRC32是对该Postings的校验和。
 
 如果存在如下的Series
 
