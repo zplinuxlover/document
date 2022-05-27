@@ -20,3 +20,13 @@
 #### 5. A high performance HTTP request router that scales well
 
 > https://github.com/julienschmidt/httprouter.git
+
+#### 6. Blazing fast, structured, leveled logging in Go
+
+> https://github.com/uber-go/zap.git
+
+#### 7. Connection multiplexer for GoLang: serve different services on the same port
+
+> https://github.com/soheilhy/cmux.git 
+
+
