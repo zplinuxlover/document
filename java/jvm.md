@@ -12,3 +12,7 @@ FROM org.t3.hbase.controller.DebugController s
 where s.name.value.@length > 4
 ```
 
+##### 3. dubbo编译跳过java doc
+
+> mvn clean install -DskipTests -Dmaven.javadoc.skip=true
+
