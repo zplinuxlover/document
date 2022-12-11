@@ -21,3 +21,9 @@ fuser 9100/tcp
 #### 5. 查看Linux进程打开的文件
 
 > lsof -p pid
+
+#### 6. linux按照find命令
+
+##### 按照文件的扩展名进行查找
+
+> find ~/develop/hadoop/share/hadoop -type f -name "*.xml"
