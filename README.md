@@ -5,6 +5,6 @@
 
 ##### 3. [JVM文档](java/jvm.md)
 
-##### 4. [linux命令](document/Linux/linux.md)
+##### 4. [linux命令](Linux/linux.md)
 
 
