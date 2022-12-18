@@ -163,3 +163,124 @@ hbase在org.apache.hadoop.hbase.regionserver.RSRpcServices#get方法中对get请
 ```
 
 如果开启hbase.regionserver.user.metrics.enabled参数（默认没有开启），则统计每一个client用户的GET操作
+
+### hbase wal写操作监控
+
+### hbase flush操作的监控
+
+hbase在org.apache.hadoop.hbase.regionserver.MemStoreFlusher.FlushHandler#run执行flush操作
+
+在"Hadoop:service=HBase,name=RegionServer,sub=Server"这个mbean中统计flush操作耗时分位值
+
+```
+{
+      "FlushTime_num_ops": 4,
+      "FlushTime_min": 0,
+      "FlushTime_max": 0,
+      "FlushTime_mean": 0,
+      "FlushTime_25th_percentile": 0,
+      "FlushTime_median": 0,
+      "FlushTime_75th_percentile": 0,
+      "FlushTime_90th_percentile": 0,
+      "FlushTime_95th_percentile": 0,
+      "FlushTime_98th_percentile": 0,
+      "FlushTime_99th_percentile": 0,
+      "FlushTime_99.9th_percentile": 0
+}
+```
+
+统计flush操作的字节数,以及自启动总的flush字节数, flush操作生成的file size,以及自启动总的flush生成file的字节数
+
+```
+{
+      "FlushMemstoreSize_num_ops": 4,
+      "FlushMemstoreSize_min": 0,
+      "FlushMemstoreSize_max": 0,
+      "FlushMemstoreSize_mean": 0,
+      "FlushMemstoreSize_25th_percentile": 0,
+      "FlushMemstoreSize_median": 0,
+      "FlushMemstoreSize_75th_percentile": 0,
+      "FlushMemstoreSize_90th_percentile": 0,
+      "FlushMemstoreSize_95th_percentile": 0,
+      "FlushMemstoreSize_98th_percentile": 0,
+      "FlushMemstoreSize_99th_percentile": 0,
+      "FlushMemstoreSize_99.9th_percentile": 0,
+      "flushedMemstoreBytes": 2590,
+      "FlushOutputSize_num_ops": 4,
+      "FlushOutputSize_min": 0,
+      "FlushOutputSize_max": 0,
+      "FlushOutputSize_mean": 0,
+      "FlushOutputSize_25th_percentile": 0,
+      "FlushOutputSize_median": 0,
+      "FlushOutputSize_75th_percentile": 0,
+      "FlushOutputSize_90th_percentile": 0,
+      "FlushOutputSize_95th_percentile": 0,
+      "FlushOutputSize_98th_percentile": 0,
+      "FlushOutputSize_99th_percentile": 0,
+      "FlushOutputSize_99.9th_percentile": 0
+}
+```
+
+在"Hadoop:service=HBase,name=RegionServer,sub=Tables"这个mbean中统计每一个table的flush操作耗时分位值
+
+```
+{
+      "Namespace_default_table_debug_table_metric_flushTime_num_ops": 1,
+      "Namespace_default_table_debug_table_metric_flushTime_min": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_max": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_mean": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_25th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_median": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_75th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_90th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_95th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_98th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_99th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushTime_99.9th_percentile": 0
+}
+```
+
+统计table的flush操作的字节数,以及自启动总的flush字节数, flush操作生成的file size,以及自启动总的flush生成file的字节数
+
+```
+{
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_num_ops": 1,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_min": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_max": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_mean": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_25th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_median": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_75th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_90th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_95th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_98th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_99th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushMemstoreSize_99.9th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushedMemstoreBytes": 32,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_num_ops": 1,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_min": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_max": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_mean": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_25th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_median": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_75th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_90th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_95th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_98th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_99th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushOutputSize_99.9th_percentile": 0,
+      "Namespace_default_table_debug_table_metric_flushedOutputBytes": 4861
+      
+}
+```
+
+### hbase compaction操作的监控
+
+### hbase
+
+
+
+
+
+
+
